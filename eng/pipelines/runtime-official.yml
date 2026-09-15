@@ -74,29 +74,22 @@ extends:
           - windows_x86
           - windows_arm64
           variables:
-            - name: _SignDiagnosticFilesArgs
-              value: ''
             - name: _EnableDefaultArtifactsArg
               value: $[iif(and(eq(variables.osGroup, 'windows'), eq(variables.archType, 'x64')),'/p:EnableDefaultRidSpecificArtifacts=false','')]
           jobParameters:
             templatePath: 'templates-official'
-            preBuildSteps:
-            - template: /eng/pipelines/coreclr/templates/install-diagnostic-certs.yml
+            buildArgs: -c $(_BuildConfig) -restore -build -publish /p:DotNetBuildAllRuntimePacks=true $(_EnableDefaultArtifactsArg)
+            nameSuffix: AllRuntimes
+            isOfficialBuild: true
+            timeoutInMinutes: 120
+            postBuildSteps:
+            - template: /eng/pipelines/coreclr/templates/sign-diagnostic-files.yml
               parameters:
                 isOfficialBuild: true
                 certNames:
                 - 'dac-dnceng-ssl-cert'
                 vaultName: 'clrdiag-esrp-pme'
                 azureSubscription: 'diagnostics-esrp-kvcertuser-pme'
-
-            buildArgs: -c $(_BuildConfig) -restore -build -publish /p:DotNetBuildAllRuntimePacks=true $(_SignDiagnosticFilesArgs) $(_EnableDefaultArtifactsArg)
-            nameSuffix: AllRuntimes
-            isOfficialBuild: true
-            timeoutInMinutes: 120
-            postBuildSteps:
-            - template: /eng/pipelines/coreclr/templates/remove-diagnostic-certs.yml
-              parameters:
-                isOfficialBuild: true
 
       #
       # Build all runtime packs
@@ -192,7 +185,7 @@ extends:
           - windows_x64
           jobParameters:
             templatePath: 'templates-official'
-            buildArgs: -s crossdacpack -restore -build -publish -c $(_BuildConfig) /p:EnableDefaultRidSpecificArtifacts=false /p:CrossRuntimeExtractionRoot=$(CrossRuntimeExtractionRoot) $(_SignDiagnosticFilesArgs)
+            buildArgs: -s crossdacpack -restore -build -publish -c $(_BuildConfig) /p:EnableDefaultRidSpecificArtifacts=false /p:CrossRuntimeExtractionRoot=$(CrossRuntimeExtractionRoot)
             nameSuffix: CrossDac
             isOfficialBuild: true
             timeoutInMinutes: 120
@@ -237,17 +230,14 @@ extends:
             preBuildSteps:
             - powershell: $(Build.SourcesDirectory)/eng/extract-for-crossdac.ps1 -DownloadDirectory $(Build.ArtifactStagingDirectory)/artifacts/RuntimeDownload -ExtractDirectory $(CrossRuntimeExtractionRoot)
               displayName: Extract runtime packs
-            - template: /eng/pipelines/coreclr/templates/install-diagnostic-certs.yml
+            postBuildSteps:
+            - template: /eng/pipelines/coreclr/templates/sign-diagnostic-files.yml
               parameters:
                 isOfficialBuild: true
                 certNames:
                 - 'dac-dnceng-ssl-cert'
                 vaultName: 'clrdiag-esrp-pme'
                 azureSubscription: 'diagnostics-esrp-kvcertuser-pme'
-            postBuildSteps:
-            - template: /eng/pipelines/coreclr/templates/remove-diagnostic-certs.yml
-              parameters:
-                isOfficialBuild: true
             dependsOn:
             - build_linux_x64_release_AllRuntimes
             - build_linux_arm_release_AllRuntimes
@@ -258,8 +248,6 @@ extends:
           variables:
           - name: CrossRuntimeExtractionRoot
             value: $(Build.SourcesDirectory)/artifacts/CrossDac
-          - name: _SignDiagnosticFilesArgs
-            value: ''
 
       - template: /eng/pipelines/common/platform-matrix.yml
         parameters:
