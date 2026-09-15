@@ -233,7 +233,7 @@ def extract_deb_file(deb_file, tmp_dir, extract_dir, ar_tool):
     os.makedirs(extract_dir, exist_ok=True)
 
     with tempfile.TemporaryDirectory(dir=tmp_dir) as tmp_subdir:
-        result = subprocess.run(f"{ar_tool} t {os.path.abspath(deb_file)}", cwd=tmp_subdir, check=True, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        result = subprocess.run([ar_tool, "t", os.path.abspath(deb_file)], cwd=tmp_subdir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         tar_filename = None
         for line in result.stdout.decode().splitlines():
@@ -247,7 +247,8 @@ def extract_deb_file(deb_file, tmp_dir, extract_dir, ar_tool):
         tar_file_path = os.path.join(tmp_subdir, tar_filename)
         print(f"Extracting {tar_filename} from {deb_file}..")
 
-        subprocess.run(f"{ar_tool} p {os.path.abspath(deb_file)} {tar_filename} > {tar_file_path}", check=True, shell=True)
+        with open(tar_file_path, "wb") as tar_file:
+            subprocess.run([ar_tool, "p", os.path.abspath(deb_file), tar_filename], check=True, stdout=tar_file)
 
         file_extension = os.path.splitext(tar_file_path)[1].lower()
 
