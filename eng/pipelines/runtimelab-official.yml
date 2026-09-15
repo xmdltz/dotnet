@@ -2,7 +2,9 @@ trigger:
   batch: true
   branches:
     include:
-    - feature/*
+    - main
+    - release/*
+    - internal/release/*
   paths:
     include:
     - '*'
@@ -15,6 +17,10 @@ trigger:
     - LICENSE.TXT
     - PATENTS.TXT
     - THIRD-PARTY-NOTICES.TXT
+
+# This is an official pipeline that should not be triggerable from a PR,
+# there is no public pipeline associated with it.
+pr: none
 
 variables:
 - template: /eng/pipelines/common/variables.yml
