@@ -46,6 +46,17 @@ function SetupCredProvider {
     ExitWithExitCode 1  
   fi
   
+  # Function to validate if a URL is an approved Azure DevOps feed
+  is_valid_darc_int_feed_url() {
+      local url=$1
+      # Only allow feeds from dnceng organization
+      if [[ $url == https://pkgs.dev.azure.com/dnceng/* ]] || [[ $url == https://pkgs.dev.azure.com/dnceng/_packaging/* ]]; then
+          return 0
+      else
+          return 1
+      fi
+  }
+  
   local endpoints='['
   local nugetConfigPackageValues=`cat "$nugetConfigPath" | grep "key=\"darc-int-"`
   local pattern="value=\"(.*)\""
