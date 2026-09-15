@@ -53,12 +53,42 @@ function SetupCredProvider {
   }
   
   $endpoints = New-Object System.Collections.ArrayList
-  $nugetConfigPackageSources = Select-Xml -Path $nugetConfigPath -XPath "//packageSources/add[contains(@key, 'darc-int-')]/@value" | foreach{$_.Node.Value}
+  
+  # Load the NuGet.config as XML to validate URLs
+  $doc = New-Object System.Xml.XmlDocument
+  $doc.Load($nugetConfigPath)
+  
+  $nugetConfigPackageSources = $doc.SelectNodes("//packageSources/add[contains(@key, 'darc-int-')]")
+  
+  # Approved feed URL prefixes
+  $approvedPrefixes = @(
+    "https://pkgs.dev.azure.com/dnceng/",
+    "https://pkgs.dev.azure.com/dnceng/_packaging/"
+  )
   
   if (($nugetConfigPackageSources | Measure-Object).Count -gt 0 ) {
-    foreach ($stableRestoreResource in $nugetConfigPackageSources) {
-      $trimmedResource = ([string]$stableRestoreResource).Trim()
-      [void]$endpoints.Add(@{endpoint="$trimmedResource"; password="$AuthToken"}) 
+    foreach ($packageSource in $nugetConfigPackageSources) {
+      $feedUrl = $packageSource.GetAttribute("value")
+      $feedName = $packageSource.GetAttribute("key")
+      $trimmedResource = ([string]$feedUrl).Trim()
+      
+      # Validate the URL is from an approved feed
+      $isApproved = $false
+      foreach ($prefix in $approvedPrefixes) {
+        if ($trimmedResource -like "$prefix*") {
+          $isApproved = $true
+          break
+        }
+      }
+      
+      if ($isApproved) {
+        Write-Host "Adding endpoint credentials for approved feed: $feedName"
+        [void]$endpoints.Add(@{endpoint="$trimmedResource"; password="$AuthToken"})
+      }
+      else {
+        Write-Host "Skipping feed '$feedName' with URL '$trimmedResource' - URL is not an approved Azure DevOps feed"
+        Write-PipelineTelemetryError -Category 'Build' -Message "Package source '$feedName' with URL '$trimmedResource' is not an approved feed. Credentials will not be added."
+      }
     }
   }
 

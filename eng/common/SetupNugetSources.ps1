@@ -91,23 +91,65 @@ function AddCredential($creds, $source, $username, $pwd) {
     $passwordElement.SetAttribute("value", $pwd)
 }
 
+function IsValidDarcIntFeedUrl($url) {
+    # Validate that the URL is an approved Azure DevOps feed
+    # Only allow feeds from dnceng organization
+    $approvedPrefixes = @(
+        "https://pkgs.dev.azure.com/dnceng/",
+        "https://pkgs.dev.azure.com/dnceng/_packaging/"
+    )
+    
+    foreach ($prefix in $approvedPrefixes) {
+        if ($url -like "$prefix*") {
+            return $true
+        }
+    }
+    
+    return $false
+}
+
 function InsertMaestroPrivateFeedCredentials($Sources, $Creds, $Username, $pwd) {
     $maestroPrivateSources = $Sources.SelectNodes("add[contains(@key,'darc-int')]")
 
     Write-Host "Inserting credentials for $($maestroPrivateSources.Count) Maestro's private feeds."
     
     ForEach ($PackageSource in $maestroPrivateSources) {
-        Write-Host "`tInserting credential for Maestro's feed:" $PackageSource.Key
-        AddCredential -Creds $creds -Source $PackageSource.Key -Username $Username -pwd $pwd
+        $feedUrl = $PackageSource.GetAttribute("value")
+        
+        if (IsValidDarcIntFeedUrl -url $feedUrl) {
+            Write-Host "`tInserting credential for Maestro's feed:" $PackageSource.Key
+            AddCredential -Creds $creds -Source $PackageSource.Key -Username $Username -pwd $pwd
+        }
+        else {
+            Write-Host "`tSkipping credential insertion for '$($PackageSource.Key)' with URL '$feedUrl' - URL is not an approved Azure DevOps feed"
+            Write-PipelineTelemetryError -Category 'Build' -Message "Package source '$($PackageSource.Key)' with URL '$feedUrl' is not an approved feed. Credentials will not be added."
+        }
     }
 }
 
-function EnablePrivatePackageSources($DisabledPackageSources) {
+function EnablePrivatePackageSources($DisabledPackageSources, $Sources) {
     $maestroPrivateSources = $DisabledPackageSources.SelectNodes("add[contains(@key,'darc-int')]")
     ForEach ($DisabledPackageSource in $maestroPrivateSources) {
-        Write-Host "`tEnsuring private source '$($DisabledPackageSource.key)' is enabled by deleting it from disabledPackageSource"
-        # Due to https://github.com/NuGet/Home/issues/10291, we must actually remove the disabled entries
-        $DisabledPackageSources.RemoveChild($DisabledPackageSource)
+        $sourceName = $DisabledPackageSource.GetAttribute("key")
+        
+        # Find the corresponding source to validate its URL
+        $sourceNode = $Sources.SelectSingleNode("add[@key='$sourceName']")
+        if ($sourceNode -ne $null) {
+            $feedUrl = $sourceNode.GetAttribute("value")
+            
+            if (IsValidDarcIntFeedUrl -url $feedUrl) {
+                Write-Host "`tEnsuring private source '$sourceName' is enabled by deleting it from disabledPackageSource"
+                # Due to https://github.com/NuGet/Home/issues/10291, we must actually remove the disabled entries
+                $DisabledPackageSources.RemoveChild($DisabledPackageSource)
+            }
+            else {
+                Write-Host "`tSkipping re-enabling '$sourceName' with URL '$feedUrl' - URL is not an approved Azure DevOps feed"
+                Write-PipelineTelemetryError -Category 'Build' -Message "Package source '$sourceName' with URL '$feedUrl' is not an approved feed. Source will not be enabled."
+            }
+        }
+        else {
+            Write-Host "`tSkipping re-enabling '$sourceName' - source definition not found in packageSources"
+        }
     }
 }
 
@@ -142,7 +184,7 @@ if ($Password) {
 $disabledSources = $doc.DocumentElement.SelectSingleNode("disabledPackageSources")
 if ($disabledSources -ne $null) {
     Write-Host "Checking for any darc-int disabled package sources in the disabledPackageSources node"
-    EnablePrivatePackageSources -DisabledPackageSources $disabledSources
+    EnablePrivatePackageSources -DisabledPackageSources $disabledSources -Sources $sources
 }
 
 $userName = "dn-bot"
