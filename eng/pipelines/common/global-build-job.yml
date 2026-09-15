@@ -188,7 +188,8 @@ jobs:
     - ${{ if and(eq(parameters.isOfficialBuild, true), notin(parameters.osGroup, 'osx', 'maccatalyst', 'ios', 'iossimulator', 'tvos', 'tvossimulator')) }}:
       - template: /eng/pipelines/common/restore-internal-tools.yml
 
-    - ${{ if ne(variables['System.TeamProject'], 'public') }}:
+    # For non-PR builds in non-public projects, use write-capable credentials for package publishing
+    - ${{ if and(ne(variables['System.TeamProject'], 'public'), ne(variables['Build.Reason'], 'PullRequest')) }}:
       - ${{ if and(ne(parameters.osGroup, 'windows'), ne(parameters.hostedOs, 'windows')) }}:
         - task: Bash@3
           displayName: Setup Private Feeds Credentials
@@ -209,6 +210,10 @@ jobs:
         # This ensures that creds are set appropriately for all feeds in the config, and that the
         # credential provider is installed.
         - task: NuGetAuthenticate@1
+
+    # For PR builds in non-public projects, use read-only federated authentication
+    - ${{ if and(ne(variables['System.TeamProject'], 'public'), eq(variables['Build.Reason'], 'PullRequest')) }}:
+      - template: /eng/common/templates/steps/enable-internal-sources.yml
 
     - ${{ if in(parameters.osGroup, 'osx', 'maccatalyst', 'ios', 'iossimulator', 'tvos', 'tvossimulator') }}:
       - script: $(Build.SourcesDirectory)/eng/common/native/install-dependencies.sh ${{ parameters.osGroup }}
