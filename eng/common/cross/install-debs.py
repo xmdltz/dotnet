@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import aiohttp
 import gzip
+import hashlib
 import os
 import re
 import shutil
@@ -16,8 +17,44 @@ import zstandard
 from collections import deque
 from functools import cmp_to_key
 
-async def download_file(session, url, dest_path, max_retries=3, retry_delay=2, timeout=60):
-    """Asynchronous file download with retries."""
+def verify_checksum(file_path, expected_checksums):
+    """Verify file integrity using available checksums.
+    
+    Args:
+        file_path: Path to the file to verify
+        expected_checksums: Dict with keys 'SHA256', 'SHA1', 'MD5sum' (any or all)
+    
+    Returns:
+        True if verification passes, False otherwise
+    """
+    if not expected_checksums:
+        print(f"WARNING: No checksums available for {file_path}, skipping verification")
+        return False
+    
+    # Try SHA256 first (most secure), then SHA1, then MD5
+    for hash_name, hash_func in [('SHA256', hashlib.sha256), ('SHA1', hashlib.sha1), ('MD5sum', hashlib.md5)]:
+        expected = expected_checksums.get(hash_name)
+        if expected:
+            hasher = hash_func()
+            with open(file_path, 'rb') as f:
+                while chunk := f.read(8192):
+                    hasher.update(chunk)
+            computed = hasher.hexdigest()
+            
+            if computed.lower() == expected.lower():
+                print(f"Checksum verification passed for {os.path.basename(file_path)} ({hash_name})")
+                return True
+            else:
+                print(f"ERROR: Checksum verification failed for {os.path.basename(file_path)}")
+                print(f"  Expected {hash_name}: {expected}")
+                print(f"  Computed {hash_name}: {computed}")
+                return False
+    
+    print(f"WARNING: No usable checksums found for {file_path}")
+    return False
+
+async def download_file(session, url, dest_path, expected_checksums=None, max_retries=3, retry_delay=2, timeout=60):
+    """Asynchronous file download with retries and checksum verification."""
     attempt = 0
     while attempt < max_retries:
         try:
@@ -27,6 +64,19 @@ async def download_file(session, url, dest_path, max_retries=3, retry_delay=2, t
                         content = await response.read()
                         f.write(content)
                     print(f"Downloaded {url} at {dest_path}")
+                    
+                    # Verify checksum if provided
+                    if expected_checksums:
+                        if not verify_checksum(dest_path, expected_checksums):
+                            # Remove corrupted file
+                            if os.path.exists(dest_path):
+                                os.remove(dest_path)
+                            print(f"ERROR: Checksum verification failed for {url}")
+                            sys.exit(1)
+                    else:
+                        print(f"ERROR: No checksums provided for {url}, refusing to proceed")
+                        sys.exit(1)
+                    
                     return
                 else:
                     print(f"Failed to download {url}, Status Code: {response.status}")
@@ -38,9 +88,10 @@ async def download_file(session, url, dest_path, max_retries=3, retry_delay=2, t
         await asyncio.sleep(retry_delay)
 
     print(f"Failed to download {url} after {max_retries} attempts.")
+    sys.exit(1)
 
 async def download_deb_files_parallel(mirror, packages, tmp_dir):
-    """Download .deb files in parallel."""
+    """Download .deb files in parallel with checksum verification."""
     os.makedirs(tmp_dir, exist_ok=True)
 
     tasks = []
@@ -51,7 +102,14 @@ async def download_deb_files_parallel(mirror, packages, tmp_dir):
             if filename:
                 url = f"{mirror}/{filename}"
                 dest_path = os.path.join(tmp_dir, os.path.basename(filename))
-                tasks.append(asyncio.create_task(download_file(session, url, dest_path)))
+                
+                # Extract checksums for verification
+                checksums = {}
+                for hash_type in ['SHA256', 'SHA1', 'MD5sum']:
+                    if hash_type in info:
+                        checksums[hash_type] = info[hash_type]
+                
+                tasks.append(asyncio.create_task(download_file(session, url, dest_path, checksums)))
 
         await asyncio.gather(*tasks)
 
@@ -158,7 +216,7 @@ def resolve_dependencies(packages, aliases, desired_packages):
     return resolved
 
 def parse_package_index(content):
-    """Parses the Packages.gz file and returns package information."""
+    """Parses the Packages.gz file and returns package information with checksums."""
     packages = {}
     aliases = {}
     entries = re.split(r'\n\n+', content)
@@ -171,14 +229,29 @@ def parse_package_index(content):
             filename = fields.get("Filename")
             depends = fields.get("Depends")
             provides = fields.get("Provides", None)
+            
+            # Extract checksums for integrity verification
+            sha256 = fields.get("SHA256")
+            sha1 = fields.get("SHA1")
+            md5sum = fields.get("MD5sum")
 
             # Only update if package_name is not in packages or if the new version is higher
             if package_name not in packages or compare_debian_versions(version, packages[package_name]["Version"]) > 0:
-                packages[package_name] = {
+                package_info = {
                     "Version": version,
                     "Filename": filename,
                     "Depends": depends
                 }
+                
+                # Add checksums if available
+                if sha256:
+                    package_info["SHA256"] = sha256
+                if sha1:
+                    package_info["SHA1"] = sha1
+                if md5sum:
+                    package_info["MD5sum"] = md5sum
+                
+                packages[package_name] = package_info
 
                 # Update aliases if package provides any alternatives
                 if provides:
@@ -312,6 +385,11 @@ if __name__ == "__main__":
             args.mirror = "http://ftp.debian.org/debian-ports"
         else:
             raise Exception("Unsupported distro")
+    
+    # Warn about insecure HTTP mirrors
+    if args.mirror.startswith("http://"):
+        print("WARNING: Using insecure HTTP mirror. Package checksums will be verified, but metadata could be tampered with.")
+        print("         Consider using HTTPS mirrors when available for improved security.")
 
     DESIRED_PACKAGES = args.packages + [ # base packages
         "dpkg",
@@ -327,6 +405,14 @@ if __name__ == "__main__":
     package_index_content = asyncio.run(download_package_index_parallel(args.mirror, args.arch, args.suite))
 
     packages_info, aliases = parse_package_index(package_index_content)
+    
+    # Verify that we have checksum information for packages
+    packages_with_checksums = sum(1 for pkg in packages_info.values() if any(k in pkg for k in ['SHA256', 'SHA1', 'MD5sum']))
+    print(f"Package index contains {len(packages_info)} packages, {packages_with_checksums} with checksum information")
+    
+    if packages_with_checksums == 0:
+        print("ERROR: No packages have checksum information. Cannot proceed securely.")
+        sys.exit(1)
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         install_packages(args.mirror, packages_info, aliases, tmp_dir, args.rootfsdir, args.artool, DESIRED_PACKAGES)
