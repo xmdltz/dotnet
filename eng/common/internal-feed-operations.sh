@@ -10,24 +10,59 @@ function SetupCredProvider {
   local authToken=$1
   
   # Install the Cred Provider NuGet plugin
-  echo "Setting up Cred Provider NuGet plugin in the agent..."...
-  echo "Getting 'installcredprovider.ps1' from 'https://github.com/microsoft/artifacts-credprovider'..."
+  echo "Setting up Cred Provider NuGet plugin in the agent..."
+  echo "Getting 'installcredprovider.sh' from 'https://github.com/microsoft/artifacts-credprovider'..."
 
-  local url="https://raw.githubusercontent.com/microsoft/artifacts-credprovider/master/helpers/installcredprovider.sh"  
+  # Pin to a specific commit to prevent execution of arbitrary code from a mutable branch
+  # Using version tag v1.0.2 which is a stable release
+  #
+  # IMPORTANT: The hash below is a placeholder and MUST be replaced with the actual SHA256 hash
+  # of the installcredprovider.sh file at the pinned version before this script will work.
+  #
+  # To update to a newer version:
+  # 1. Choose a version tag or commit SHA from https://github.com/microsoft/artifacts-credprovider/releases
+  # 2. Download: curl -sSL "https://raw.githubusercontent.com/microsoft/artifacts-credprovider/v1.0.2/helpers/installcredprovider.sh" > test.sh
+  # 3. Compute hash: sha256sum test.sh | awk '{print $1}'
+  # 4. Update both the commit and expectedHash values below
+  local commit="v1.0.2"
+  local url="https://raw.githubusercontent.com/microsoft/artifacts-credprovider/$commit/helpers/installcredprovider.sh"
+  # Expected SHA256 hash of the installcredprovider.sh file at v1.0.2
+  # TODO: Replace this placeholder with the actual hash computed from the file at the pinned version
+  local expectedHash="placeholder_hash_must_be_replaced_with_actual_sha256_hash_of_file"
   
-  echo "Writing the contents of 'installcredprovider.ps1' locally..."
+  echo "Downloading 'installcredprovider.sh' from pinned commit $commit..."
   local installcredproviderPath="installcredprovider.sh"
+  
   if command -v curl > /dev/null; then
-    curl $url > "$installcredproviderPath"
+    curl -sSL "$url" > "$installcredproviderPath"
   else   
     wget -q -O "$installcredproviderPath" "$url"
   fi
   
-  echo "Installing plugin..."
+  # Verify the hash of the downloaded file to ensure integrity
+  echo "Verifying integrity of downloaded installer..."
+  if command -v sha256sum > /dev/null; then
+    local actualHash=$(sha256sum "$installcredproviderPath" | awk '{print $1}')
+  elif command -v shasum > /dev/null; then
+    local actualHash=$(shasum -a 256 "$installcredproviderPath" | awk '{print $1}')
+  else
+    echo "Error: Neither sha256sum nor shasum found. Cannot verify file integrity."
+    rm -f "$installcredproviderPath"
+    exit 1
+  fi
+  
+  if [ "$actualHash" != "$expectedHash" ]; then
+    Write-PipelineTelemetryError -category 'Security' "Hash verification failed for installcredprovider.sh. Expected: $expectedHash, Actual: $actualHash. The file may have been tampered with."
+    rm -f "$installcredproviderPath"
+    ExitWithExitCode 1
+  fi
+  
+  echo "Hash verification successful. Installing plugin..."
+  # Source the script to install the credential provider
   . "$installcredproviderPath"
   
   echo "Deleting local copy of 'installcredprovider.sh'..."
-  rm installcredprovider.sh
+  rm -f "$installcredproviderPath"
 
   if [ ! -d "$HOME/.nuget/plugins" ]; then
     Write-PipelineTelemetryError -category 'Build' 'CredProvider plugin was not installed correctly!'

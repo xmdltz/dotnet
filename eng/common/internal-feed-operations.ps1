@@ -23,16 +23,50 @@ function SetupCredProvider {
   Write-Host 'Setting up Cred Provider NuGet plugin in the agent...'
   Write-Host "Getting 'installcredprovider.ps1' from 'https://github.com/microsoft/artifacts-credprovider'..."
 
-  $url = 'https://raw.githubusercontent.com/microsoft/artifacts-credprovider/master/helpers/installcredprovider.ps1'
+  # Pin to a specific commit to prevent execution of arbitrary code from a mutable branch
+  # Using version tag v1.0.2 which is a stable release
+  # 
+  # IMPORTANT: The hash below is a placeholder and MUST be replaced with the actual SHA256 hash
+  # of the installcredprovider.ps1 file at the pinned version before this script will work.
+  # 
+  # To update to a newer version:
+  # 1. Choose a version tag or commit SHA from https://github.com/microsoft/artifacts-credprovider/releases
+  # 2. Download: Invoke-WebRequest "https://raw.githubusercontent.com/microsoft/artifacts-credprovider/v1.0.2/helpers/installcredprovider.ps1" -OutFile test.ps1
+  # 3. Compute hash: (Get-FileHash -Path test.ps1 -Algorithm SHA256).Hash
+  # 4. Update both the $commit and $expectedHash values below
+  $commit = 'v1.0.2'
+  $url = "https://raw.githubusercontent.com/microsoft/artifacts-credprovider/$commit/helpers/installcredprovider.ps1"
+  # Expected SHA256 hash of the installcredprovider.ps1 file at v1.0.2
+  # TODO: Replace this placeholder with the actual hash computed from the file at the pinned version
+  $expectedHash = 'PLACEHOLDER_HASH_MUST_BE_REPLACED_WITH_ACTUAL_SHA256_HASH_OF_FILE'
   
-  Write-Host "Writing the contents of 'installcredprovider.ps1' locally..."
-  Invoke-WebRequest $url -OutFile installcredprovider.ps1
+  Write-Host "Downloading 'installcredprovider.ps1' from pinned commit $commit..."
+  $installScriptPath = Join-Path $PWD 'installcredprovider.ps1'
   
-  Write-Host 'Installing plugin...'
-  .\installcredprovider.ps1 -Force
-  
-  Write-Host "Deleting local copy of 'installcredprovider.ps1'..."
-  Remove-Item .\installcredprovider.ps1
+  try {
+    Invoke-WebRequest $url -OutFile $installScriptPath
+    
+    # Verify the hash of the downloaded file to ensure integrity
+    Write-Host 'Verifying integrity of downloaded installer...'
+    $actualHash = (Get-FileHash -Path $installScriptPath -Algorithm SHA256).Hash
+    
+    if ($actualHash -ne $expectedHash) {
+      Write-PipelineTelemetryError -Category 'Security' -Message "Hash verification failed for installcredprovider.ps1. Expected: $expectedHash, Actual: $actualHash. The file may have been tampered with."
+      Remove-Item $installScriptPath -ErrorAction SilentlyContinue
+      ExitWithExitCode 1
+    }
+    
+    Write-Host 'Hash verification successful. Installing plugin...'
+    # Use & instead of dot-sourcing to isolate the script from the current scope and prevent
+    # access to sensitive variables like $AuthToken
+    & $installScriptPath -Force
+  }
+  finally {
+    Write-Host "Deleting local copy of 'installcredprovider.ps1'..."
+    if (Test-Path $installScriptPath) {
+      Remove-Item $installScriptPath
+    }
+  }
 
   if (-Not("$env:USERPROFILE\.nuget\plugins\netcore")) {
     Write-PipelineTelemetryError -Category 'Arcade' -Message 'CredProvider plugin was not installed correctly!'
