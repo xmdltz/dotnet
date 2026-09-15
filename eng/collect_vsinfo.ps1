@@ -17,7 +17,7 @@ $ProgressPreference = "SilentlyContinue"
 $LogDir = Join-Path $LogDir $ArchiveRunName
 mkdir $LogDir
 
-$vscollect_uri="http://aka.ms/vscollect.exe"
+$vscollect_uri="https://aka.ms/vscollect.exe"
 $vscollect="$env:TEMP\vscollect.exe"
 
 if (-not (Test-Path $vscollect)) {
@@ -30,6 +30,31 @@ if (-not (Test-Path $vscollect)) {
         Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Unable to download vscollect."
         exit 1
     }
+
+    # Verify Authenticode signature to ensure the executable is from Microsoft
+    $signature = Get-AuthenticodeSignature $vscollect
+    if ($signature.Status -ne 'Valid') {
+        Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Downloaded vscollect.exe has invalid signature. Status: $($signature.Status)"
+        Remove-Item $vscollect -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+
+    # Verify the signer is Microsoft
+    $signerCert = $signature.SignerCertificate
+    if ($null -eq $signerCert) {
+        Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Downloaded vscollect.exe does not contain a valid signature certificate."
+        Remove-Item $vscollect -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+
+    # Check that the certificate subject contains Microsoft Corporation
+    if ($signerCert.Subject -notmatch 'O=Microsoft Corporation') {
+        Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Downloaded vscollect.exe is not signed by Microsoft Corporation. Subject: $($signerCert.Subject)"
+        Remove-Item $vscollect -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+
+    Write-Host "vscollect.exe signature verified successfully. Signer: $($signerCert.Subject)"
 }
 
 &"$vscollect"
@@ -59,6 +84,31 @@ if (-not (Test-Path $vsdir))
         })
 
         Expand-Archive -Path "$TempDir\Procdump.zip" $procDumpDir
+
+        # Verify Authenticode signature to ensure the executable is from Microsoft
+        $signature = Get-AuthenticodeSignature $procDumpToolPath
+        if ($signature.Status -ne 'Valid') {
+            Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Downloaded procdump.exe has invalid signature. Status: $($signature.Status)"
+            Remove-Item $procDumpDir -Recurse -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+
+        # Verify the signer is Microsoft
+        $signerCert = $signature.SignerCertificate
+        if ($null -eq $signerCert) {
+            Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Downloaded procdump.exe does not contain a valid signature certificate."
+            Remove-Item $procDumpDir -Recurse -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+
+        # Check that the certificate subject contains Microsoft Corporation
+        if ($signerCert.Subject -notmatch 'O=Microsoft Corporation') {
+            Write-PipelineTelemetryError -Category 'InitializeToolset' -Message "Downloaded procdump.exe is not signed by Microsoft Corporation. Subject: $($signerCert.Subject)"
+            Remove-Item $procDumpDir -Recurse -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+
+        Write-Host "procdump.exe signature verified successfully. Signer: $($signerCert.Subject)"
     }
 
     &"$procDumpToolPath" -ma -accepteula VSIXAutoUpdate.exe "$LogDir"
