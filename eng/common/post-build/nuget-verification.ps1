@@ -13,6 +13,11 @@
 .PARAMETER DownloadPath
     The directory path to download the verification tool and nuget.exe to. If not provided,
     %TEMP%\NuGet.VerifyNuGetPackage will be used.
+.PARAMETER PackageVersion
+    The specific version of NuGet.VerifyMicrosoftPackage to download. If not provided, version 1.1.0 will be used.
+    This parameter ensures a known, trusted version is used rather than allowing arbitrary prerelease versions.
+.PARAMETER ExpectedPackageHash
+    Optional SHA256 hash of the expected package file for additional verification.
 .PARAMETER args
     Arguments that will be passed to the verification tool.
 .EXAMPLE
@@ -26,12 +31,15 @@
 #>
 
 # This script was copied from https://github.com/NuGet/NuGetGallery/blob/3e25ad135146676bcab0050a516939d9958bfa5d/src/VerifyMicrosoftPackage/verify.ps1
+# and modified to pin a specific package version and add signature verification for supply chain security.
 
 [CmdletBinding(PositionalBinding = $false)]
 param(
    [string]$NuGetExePath,
    [string]$PackageSource = "https://api.nuget.org/v3/index.json",
    [string]$DownloadPath,
+   [string]$PackageVersion = "1.1.0",
+   [string]$ExpectedPackageHash,
    [Parameter(ValueFromRemainingArguments = $true)]
    [string[]]$args
 )
@@ -81,11 +89,11 @@ if ($NuGetExePath) {
 Write-Host "Using nuget.exe path: $nuget"
 Write-Host " "
 
-# Download the latest version of the verification tool.
-Write-Host "Downloading the latest version of $packageId from $packageSource..."
+# Download the specified version of the verification tool.
+Write-Host "Downloading version $PackageVersion of $packageId from $packageSource..."
 Write-Host $fence
 & $nuget install $packageId `
-    -Prerelease `
+    -Version $PackageVersion `
     -OutputDirectory $DownloadPath `
     -Source $PackageSource
 Write-Host $fence
@@ -96,12 +104,41 @@ if ($LASTEXITCODE -ne 0) {
     exit
 }
 
-# Find the most recently downloaded tool
-Write-Host "Finding the most recently downloaded verification tool."
-$verifyProbePath = Join-Path $DownloadPath "$packageId.*"
-$verifyPath = Get-ChildItem -Path $verifyProbePath -Directory `
-    | Sort-Object -Property LastWriteTime -Descending `
-    | Select-Object -First 1
+# Verify package signature if downloading from public feed
+if ($PackageSource -eq "https://api.nuget.org/v3/index.json") {
+    Write-Host "Verifying package signature..."
+    $packagePath = Join-Path $DownloadPath "$packageId.$PackageVersion"
+    $nupkgFile = Join-Path $packagePath "$packageId.$PackageVersion.nupkg"
+    
+    if (Test-Path $nupkgFile) {
+        & $nuget verify -Signatures $nupkgFile
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Package signature verification failed. The package may have been tampered with."
+            exit 1
+        }
+        Write-Host "Package signature verification succeeded."
+    }
+}
+
+# Optionally verify package hash if provided
+if ($ExpectedPackageHash) {
+    Write-Host "Verifying package hash..."
+    $packagePath = Join-Path $DownloadPath "$packageId.$PackageVersion"
+    $nupkgFile = Join-Path $packagePath "$packageId.$PackageVersion.nupkg"
+    
+    if (Test-Path $nupkgFile) {
+        $actualHash = (Get-FileHash -Path $nupkgFile -Algorithm SHA256).Hash
+        if ($actualHash -ne $ExpectedPackageHash) {
+            Write-Error "Package hash verification failed. Expected: $ExpectedPackageHash, Actual: $actualHash"
+            exit 1
+        }
+        Write-Host "Package hash verification succeeded."
+    }
+}
+
+# Locate the downloaded tool
+Write-Host "Locating the verification tool."
+$verifyPath = Join-Path $DownloadPath "$packageId.$PackageVersion"
 $verify = Join-Path $verifyPath "tools\NuGet.VerifyMicrosoftPackage.exe"
 Write-Host "Using verification tool: $verify"
 Write-Host " "
